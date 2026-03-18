@@ -1,0 +1,6 @@
+da dobawq w system prompt-a da chete vnimatelno instruckiite naprrimer ako e kazano che jaltite i sivite sa za popalvane da se koncentira varhu tqh
+i da ignorira mesta kydeto sa popalva datata, slagat se podpisi, pechati i takiva neshta
+
+
+nakraq da go minavam s OCR i da go prashtam na LLM da vidi dali e dobre
+ smenqme podhoda parvata iteraciq samo shte namirame poletata, posle s OCR she gi prashtame na LLM-a da gi opravq

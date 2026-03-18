@@ -1,0 +1,15 @@
+[project]
+name = "vound"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "docling>=2.80.0",
+    "langchain[google-genai]>=1.2.12",
+    "langchain-openai>=1.1.11",
+    "langfuse>=4.0.0",
+    "lxml>=6.0.2",
+    "openpyxl>=3.1.5",
+    "python-dotenv>=1.2.2",
+]
