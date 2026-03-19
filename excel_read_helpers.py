@@ -71,6 +71,20 @@ def extract_checkboxes(file_path, sheet_name):
             except Exception as e:
                 print(f"Warning: Could not parse {vml_file}: {e}")
 
+    # Update checked status from linked cell value (only when a linked cell exists)
+    wb = openpyxl.load_workbook(file_path, data_only=True)
+    sheet = wb[sheet_name]
+    for checkbox in checkboxes:
+        lc = checkbox['linked_cell']
+        if lc:
+            # Normalize sheet-prefixed refs like "Sheet1!C22" → "C22"
+            if '!' in lc:
+                lc = lc.split('!')[-1]
+                checkbox['linked_cell'] = lc
+            cell_value = sheet[lc].value
+            checkbox['checked'] = cell_value == 1
+    wb.close()
+
     return checkboxes
 
 
@@ -108,7 +122,7 @@ def _find_sheet_path(z, sheet_name=None):
             target_sheet = sheets[0].get(f'{{{ns_r}}}id')
 
         if target_sheet and target_sheet in rid_map:
-            target = rid_map[target_sheet]
+            target = rid_map[target_sheet].lstrip('/')
             if not target.startswith('xl/'):
                 target = f'xl/{target}'
             return target
@@ -266,7 +280,8 @@ def excel_to_text_grid_full(file_path, sheet_name=None):
             if cell.coordinate in ghost_cells:
                 continue
 
-            val = " ".join(str(cell.value).split()) if cell.value is not None else ""
+            val = " ".join(str(cell.value).split()
+                           ) if cell.value is not None else ""
 
             is_locked = bool(
                 cell.protection and is_sheet_protected and cell.protection.locked)
