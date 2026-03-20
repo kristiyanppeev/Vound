@@ -45,11 +45,20 @@ class SheetClassificationItem(BaseModel):
         default=1,
         description=(
             "Number of independent reference slots on this sheet. "
-            "Set to 1 for all non-reference sheets and for reference sheets where "
-            "each sheet holds exactly one reference or one person (one-per-sheet layout). "
-            "Set to N > 1 only when this is a reference_company or reference_personnel sheet "
-            "that contains multiple slots side-by-side as columns — e.g. column headers "
-            "'Referenz 1', 'Referenz 2', 'Referenz 3' or 'Person 1', 'Person 2' across the same sheet."
+            "For reference_company: number of side-by-side reference columns "
+            "('Referenz 1', 'Referenz 2', ...). Set to 1 for one-per-sheet layouts. "
+            "For reference_personnel: number of project reference columns PER person. "
+            "Set to 1 if each person has a single project reference block. "
+            "For all other categories: always 1."
+        )
+    )
+    person_slots: int = Field(
+        default=1,
+        description=(
+            "Only relevant for reference_personnel sheets. "
+            "Set to N > 1 when the sheet has multiple people side-by-side as columns "
+            "(e.g. column headers 'Person 1', 'Person 2', 'Person 3'). "
+            "Set to 1 for all other categories and for single-person-per-sheet layouts."
         )
     )
     reason: str = Field(description="One sentence explaining why")
@@ -99,12 +108,17 @@ For each sheet assign exactly one of these categories:
 
 reference_slots
   Only relevant for reference_company and reference_personnel sheets.
-  Count how many independent slots the sheet contains.
-  - If column headers like "Referenz 1", "Referenz 2", "Referenz 3" or "Person 1", "Person 2"
-    appear side-by-side across the sheet, set reference_slots to that count.
-  - If this sheet holds exactly one reference or one person (typical one-per-sheet layout),
-    set reference_slots to 1.
-  - For every other category, set reference_slots to 1.
+  - For reference_company: count the number of side-by-side reference columns
+    ("Referenz 1", "Referenz 2", "Referenz 3" ...). Set to 1 for one-per-sheet layouts.
+  - For reference_personnel: count the number of project reference columns PER person.
+    Set to 1 if each person has a single project reference block.
+  - For every other category: set to 1.
+
+person_slots
+  Only relevant for reference_personnel sheets.
+  Count how many distinct people columns appear side-by-side on the sheet
+  (e.g. column headers "Person 1", "Person 2", "Person 3").
+  Set to 1 for all other categories and for single-person-per-sheet layouts.
 
 Return one entry per sheet in the order they were given."""
 
@@ -320,15 +334,22 @@ _ASSIGN_PERSONNEL_SYSTEM_PROMPT = """You are assigning key team members to perso
 
 Rules:
 - Each slot gets exactly one person.
-- When multiple slots share the same sheet name (same prefix before " / "), they are
-  project reference sub-slots for the SAME person — assign the same person to all of them.
-  Example: "Planungsverantwortl. TA / Referenz 1", "Planungsverantwortl. TA / Referenz 2",
-  "Planungsverantwortl. TA / Referenz 3" all belong to one person with three project references.
+- Slot IDs follow one of these patterns:
+    "Sheet"                              — single person, single reference
+    "Sheet / Referenz N"                 — single person, multiple project references (same person for all)
+    "Sheet / Person N"                   — multiple people, one reference each (different person per Person N)
+    "Sheet / Person N / Referenz M"      — multiple people, multiple references each
+- Grouping rule: slots that share the same "Sheet / Person N" prefix belong to the SAME person.
+  Example: "MySheet / Person 1 / Referenz 1" and "MySheet / Person 1 / Referenz 2" → same person.
+- Different "Person N" indices on the same sheet → different people.
+  Example: "MySheet / Person 1 / Referenz 1" and "MySheet / Person 2 / Referenz 1" → different people.
+- For the legacy "Sheet / Referenz N" pattern (no Person prefix), all sub-slots belong to the SAME person.
+  Example: "Planungsverantwortl. TA / Referenz 1", "Planungsverantwortl. TA / Referenz 2" → same person.
 - When slots belong to DIFFERENT sheets, each person may only be used once across those sheets.
 - Match the person whose role and expertise best fits what the slot is asking for.
   Read the slot description carefully — it usually states the required role (e.g. "Verantwortliche Planung TA",
   "Projektleiterin Objektplanung", "Stellvertretender Projektleiter").
-- If there are more distinct-sheet slots than people, assign null to the extra slots.
+- If there are more distinct-sheet/person slots than people, assign null to the extra slots.
 
 Return one assignment per slot using the exact slot identifier given."""
 
@@ -693,14 +714,19 @@ def fill_reference_personnel_sheet(
     full_personnel_slice: str,
     cell_selection_rules: str,
     personnel_requirements: str,
-    slot_label: Optional[str] = None,
+    person_label: Optional[str] = None,
+    ref_label: Optional[str] = None,
 ) -> list[dict]:
     """
     Full fill pipeline for one reference_personnel sheet/slot:
       filter → consensus fill → write
-    slot_label: when the sheet has multiple person columns, the label of the target column.
+    person_label: when the sheet has multiple person columns, the label of the target column
+                  (e.g. "Person 1"). None for single-person sheets.
+    ref_label:    when the person has multiple project reference columns, the label of the target
+                  column (e.g. "Referenz 2"). None when only one reference block exists.
     Returns the list of filled cells.
     """
+    slot_label = " / ".join(filter(None, [person_label, ref_label])) or None
     label = f"'{sheet_name}'" if not slot_label else f"'{sheet_name}' / {slot_label}"
     print(f"\n  -- {label} (reference_personnel) --")
 
@@ -713,17 +739,22 @@ def fill_reference_personnel_sheet(
 
     # 2. Consensus fill: identify cells and assign values, loop until stable
     grid_text = excel_to_text_grid_full(file_path, sheet_name)
-    slot_num = None
-    if slot_label:
-        _m = re.search(r"\d+", slot_label)
-        slot_num = int(_m.group()) if _m else None
+
+    # Build the column-targeting instruction
+    column_part = f"Fill ONLY the column labeled '{person_label}'. Do not write into any other person columns. " if person_label else ""
+
+    # Build the reference-number instruction
+    ref_num = None
+    if ref_label:
+        _m = re.search(r"\d+", ref_label)
+        ref_num = int(_m.group()) if _m else None
+    ref_part = f"Use this person's project reference #{ref_num} (the {ref_num}. reference listed in [PERSONNEL DATA]). Do NOT reuse a project reference that was assigned to another column — each column must contain a different project. " if ref_num else ""
+
     slot_instruction = (
-        f"[TARGET SLOT] Fill ONLY the column labeled '{slot_label}'. "
-        f"Do not write into any other reference columns. "
-        + (f"Use this person's project reference #{slot_num} (the {slot_num}. reference listed in [PERSONNEL DATA]). " if slot_num else "")
-        + "\n\n"
-        if slot_label else ""
+        f"[TARGET SLOT] {column_part}{ref_part}\n\n"
+        if (column_part or ref_part) else ""
     )
+
     human_prompt = (
         f"{slot_instruction}"
         f"[CELL SELECTION RULES]\n{cell_selection_rules}\n\n"
@@ -1048,7 +1079,19 @@ def run(file_path: str, only_sheet: Optional[str] = None) -> tuple[
         for sheet_name, item in classification.items():
             if item.category != category:
                 continue
-            if item.reference_slots > 1:
+            if category == "reference_personnel" and item.person_slots > 1:
+                # Multi-person sheet: "Sheet / Person N / Referenz M" (or "Sheet / Person N" if refs=1)
+                for p in range(item.person_slots):
+                    person_label = f"Person {p + 1}"
+                    if item.reference_slots > 1:
+                        for r in range(item.reference_slots):
+                            ref_label = f"Referenz {r + 1}"
+                            slot_id = f"{sheet_name} / {person_label} / {ref_label}"
+                            slot_map[slot_id] = (sheet_name, f"{person_label} / {ref_label}")
+                    else:
+                        slot_id = f"{sheet_name} / {person_label}"
+                        slot_map[slot_id] = (sheet_name, person_label)
+            elif item.reference_slots > 1:
                 for i in range(item.reference_slots):
                     label = f"Referenz {i + 1}"
                     slot_id = f"{sheet_name} / {label}"
@@ -1117,6 +1160,9 @@ def run(file_path: str, only_sheet: Optional[str] = None) -> tuple[
         + (profile_slices.get("declaration") or "")
     )
     for slot_id, (sheet_name, slot_label) in personnel_slot_map.items():
+        parts = slot_label.split(" / ") if slot_label else []
+        person_label = next((p for p in parts if p.startswith("Person")), None)
+        ref_label = next((p for p in parts if p.startswith("Referenz")), None)
         filled = fill_reference_personnel_sheet(
             file_path=file_path,
             out_path=out_path,
@@ -1125,7 +1171,8 @@ def run(file_path: str, only_sheet: Optional[str] = None) -> tuple[
             full_personnel_slice=ref_personnel_data,
             cell_selection_rules=cell_selection_rules,
             personnel_requirements=personnel_requirements,
-            slot_label=slot_label,
+            person_label=person_label,
+            ref_label=ref_label,
         )
         all_filled[slot_id] = filled
 

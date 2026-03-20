@@ -59,11 +59,16 @@ from a company profile, using an LLM for every decision.
         │  5. assign_personnel                    │◄────┘  │   │
         │                                         │        │   │
         │  One LLM call assigns team members to   │        │   │
-        │  personnel slots. Each person used once │        │   │
-        │  across different sheets. If a sheet has│        │   │
-        │  multiple Referenz columns (one person  │        │   │
-        │  with N project references), the same  │        │   │
-        │  person is assigned to all sub-slots.  │        │   │
+        │  personnel slots. Slot IDs follow a     │        │   │
+        │  3-part structure:                      │        │   │
+        │  "Sheet / Person N / Referenz M"        │        │   │
+        │  · Sub-slots with the same Person N     │        │   │
+        │    prefix → same person assigned.       │        │   │
+        │  · Different Person N index → different │        │   │
+        │    person (each used at most once).     │        │   │
+        │  · Legacy "Sheet / Referenz N" pattern  │        │   │
+        │    (no Person prefix) → same person for │        │   │
+        │    all sub-slots (1 person, N refs).    │        │   │
         └────────┬────────────────────────────────┘        │   │
                  │                                          │   │
                  ▼                                          │   │
@@ -83,9 +88,10 @@ from a company profile, using an LLM for every decision.
 │  ┌──────────────────────────────────────────────────────────┐         │
 │  │ filter_personnel_data — extract just the assigned person │         │
 │  │ read full grid → _consensus_fill → write_cells           │         │
-│  │ for multi-slot sheets: called once per Referenz column,  │         │
-│  │ each call targets its column and uses the person's Nth   │         │
-│  │ project reference (bio rows only filled on first call)   │         │
+│  │ slot_label split into person_label + ref_label:          │         │
+│  │  · person_label ("Person N") → fill only that column     │         │
+│  │  · ref_label ("Referenz M") → use person's Mth project   │         │
+│  │    reference; each column must use a different project   │         │
 │  └──────────────────────────────────────────────────────────┘         │
 │                                                                        │
 │  company_form sheets ◄──────────────────────────────── company_form   │
@@ -135,7 +141,7 @@ This prevents one-off LLM inconsistencies from writing wrong cells.
 | `declaration`         | Legal declarations (Erklärung, Eigenerklärung)  | Company name, address, representative      |
 | `company_form`        | Main application form                           | Full company master data + financials      |
 | `reference_company`   | One or more project reference slots per sheet   | One unique reference per slot              |
-| `reference_personnel` | One key person per sheet (with 1–N ref columns) | Person profile + Nth project reference     |
+| `reference_personnel` | One or more people per sheet; each with 1–N project reference columns | Person profile + Nth project reference per column |
 | `fee_offer`           | Hourly rates / HOAI pricing                     | Company identity only — pricing left blank |
 
 ---
@@ -144,9 +150,11 @@ This prevents one-off LLM inconsistencies from writing wrong cells.
 
 **No duplicate references** — `assign_references` and `assign_personnel` see all
 slots and all available data in a single call. Company references are each assigned
-to exactly one slot. Personnel are each assigned to exactly one sheet; if a sheet has
-multiple Referenz columns (one person with N project references side by side), the same
-person is assigned to all sub-slots and each call targets the person's Nth project reference.
+to exactly one slot. Personnel slots use a 3-part ID (`Sheet / Person N / Referenz M`):
+sub-slots sharing the same `Person N` prefix get the same person; different `Person N`
+indices get different people. Each fill call targets only its column (`person_label`) and
+uses the person's Mth project reference (`ref_label`), with an explicit constraint that
+no project reference may be reused across columns of the same sheet.
 
 **No hallucinated data** — each fill call receives only the slice of company data
 relevant to its sheet type. Pricing fields are explicitly left null because no
